@@ -1,156 +1,52 @@
-import signal 
-import base64
-import json
-import re
-import urllib.parse
-import urllib.request
-import html
 import os
 import sys
 import time
-import threading
-import random
-import requests
-import hashlib
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
-from fastapi import FastAPI, Response, Request
-from fastapi.responses import HTMLResponse
-from fastapi.middleware.cors import CORSMiddleware
-import asyncio
-import logging
-from fastapi import Request, Response
-from starlette.datastructures import Address
-from fastapi import HTTPException
-from fastapi.responses import StreamingResponse
-from contextlib import asynccontextmanager
-from fastapi import FastAPI
+import signal
+import base64
+import json
+import re
 import io
+import html
+import hashlib
+import random
+import logging
+import logging.config
+import asyncio
+import threading
+from threading import Lock
+from contextlib import asynccontextmanager
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests
 import pysubs2  # <- Necesar în requirements.txt
-from fastapi import Response
+from fastapi import FastAPI, Response, Request, HTTPException
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.datastructures import Address
+from uvicorn.logging import AccessFormatter
 
-
-
-
-# 1. Definim lifespan-ul sus de tot
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Pornim curățătorul automat de cache
-    asyncio.create_task(curata_cache_vechi())
-    try:
-        import logging
-        logging.config.dictConfig(log_config)
-    except Exception:
-        pass
-    yield
-
-# Unirea tuturor setărilor într-un singur obiect, fără conflicte:
-app = FastAPI(
-    title="Gemini AI Cloud Pool Addon", 
-    lifespan=lifespan,
-    root_path="/gemini"
-)
-
-# Imediat sub ea poți lăsa contorul tău:
-contor_loti_esuate_per_user = {}
-
-# Cache temporar în RAM pentru trișori (ca să nu mai apelăm Google API live pentru ei)
-CACHE_CHEI_INVALIDE_RAM = {}
-IP_BANATE_TEMPORAR = {}
-RECIDIVISTI_CONTOR = {}
-CACHE_DETALII_FILME_RAM = {}
-ISTORIC_CERERI_IP = {}
-
-# Permitem conexiunile din Stremio (CORS)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# --- CONFIGURARE ȘI FIȘIERE STOCARE ---
-DOMENIU_PUBLIC = "blagoie.com"
-CACHE_DIR = "translated_cache_gemini_v2"
-POOL_FILE_PATH = "gemini_pool_v2.txt"       # Toate cheile valide colectate de la toți utilizatorii
-LOG_FILE_PATH = "gemini_conexiuni_v2.txt"   # Evidența strictă a aparatelor (TV LG, PC, Telefon) și IP-urilor
-gemini_speed_lock = asyncio.Lock()
-
-if not os.path.exists(CACHE_DIR):
-    os.makedirs(CACHE_DIR)
-
-# Transformăm căile în adrese absolute din container pentru siguranță în Docker
-CALE_ABS_LOG = os.path.abspath(LOG_FILE_PATH)
-CALE_ABS_CACHE = os.path.abspath(CACHE_DIR)
-active_ips = set()
-active_ips_lock = asyncio.Lock()
-keys_lock = Lock()
-write_lock = Lock()
-pool_lock = Lock()
-keys_in_use = set()
-film_activ_per_ip = {}
-film_activ_lock = asyncio.Lock()
-printat_coada = set()
-printat_coada_lock = asyncio.Lock()
-ultimul_request_utilizator = {}
-active_users = set()          # Ține minte ID-urile utilizatorilor activi (în loc de IP-uri)
-film_activ_per_user = {}      # Ce film traduce fiecare ID: {id_utilizator: sub_id}
-CONTOR_ABUZ_FILME = {}        # Ține minte numărul de schimbări rapide: {id_utilizator: număr_abateri}
-
-API_TIMEOUT = 300
-THINKING_LEVEL = "low"
-FIRST_BATCH_SIZE = 100
-NEXT_BATCH_SIZE = 300
-FIRST_BATCH_TIMEOUT = 300
-PAUZA_DUPA_EROARE = 10.0 
-
-CLR_TIME = "\033[1;33m"   # Galben (Timp)
+# --- CONFIGURARE PALETĂ CULORI TERMINAL (ANSI COLORS) ---
+CLR_TIME  = "\033[1;33m"   # Galben (Timp)
 CLR_ALERT = "\033[1;31m"  # Roșu (Blocat / Alertă)
 CLR_QUEUE = "\033[1;36m"  # Cyan (Coadă)
-CLR_RUN = "\033[1;32m"    # Verde (Procesare)
-CLR_COOL = "\033[1;35m"    # Magenta (Răcire)
-CLR_INFO = "\033[1;34m"    # Albastru (Info / Eliberare)
-CLR_RESET = "\033[0m"     # Resetare culoare
-CLR_TIME = "\033[1;33m"   # Galben (Timp)
-CLR_FW = "\033[1;31m"     # Roșu Aprins (Firewall / Blocaje)
-CLR_DEV = "\033[1;36m"    # Cyan (Dispozitive detectate)
-CLR_RESET = "\033[0m"     # Resetare culoare
-# Adaugă aceste linii la începutul fișierului main.py
-CLR_WARN = "\033[93m"   # Galben/Portocaliu pentru avertismente
-CLR_RESET = "\033[0m"   # Resetare culoare text standard
+CLR_RUN   = "\033[1;32m"    # Verde (Procesare)
+CLR_COOL  = "\033[1;35m"    # Magenta (Răcire)
+CLR_INFO  = "\033[1;34m"    # Albastru (Info / Eliberare)
+CLR_FW    = "\033[1;31m"     # Roșu Aprins (Firewall / Blocaje)
+CLR_DEV   = "\033[1;36m"    # Cyan (Dispozitive detectate)
+CLR_WARN  = "\033[93m"     # Galben/Portocaliu pentru avertismente
+CLR_RESET = "\033[0m"      # Resetare culoare standard
 
-MODEL_PREFERAT = [
-    "gemini-flash-lite-latest",
-    "gemini-3-flash-preview",   
-    "gemini-3.5-flash",     
-    "gemini-flash-latest",     
-]
-
-STOP_WORDS = {
-    "ok", "okay", "yeah", "yes", "no", "nah", "yep", "yup", "oh", "ah", "wow", 
-    "hey", "ha", "haha", "huh", "uh", "um", "mmm", "hmm", "oops", "phew", 
-    "shh", "brrr", "sigh", "pant", "gasp", "laugh", "sob", "...", "..", "-", "--"
-}
-
-AD_PATTERNS = [
-    r"www\.[a-z0-9]+\.[a-z]{2,}", r"https?://[^\s]+", r"subtitles by|translated by",
-    r"OpenSubtitles|Subscene", r"support us|donate", r"@[a-z0-9_]+", r"Otabe-Fansub"
-]
-
-# --- CONFIGURARE LOGURI STANDARD UVICORN (CU DATĂ, ORĂ ȘI IP REAL) ---
-import logging
-import urllib.parse
-from uvicorn.logging import AccessFormatter
-from contextlib import asynccontextmanager
-
-# 🚀 CLASA SEPARATĂ CARE INTERCEPTEAZĂ ȘI DECODEAZĂ TEXTUL ÎNAINTE SĂ APARĂ PE ECRAN
+# --- CONFIGURARE LOGURI STANDARD UVICORN (REPARAT - REZOLVĂ CRASH-UL) ---
 class DecodedAccessFormatter(AccessFormatter):
+    """Interceptează, colorează și decodează automat textul URL-urilor în consolă"""
     def format(self, record: logging.LogRecord) -> str:
         if hasattr(record, "args") and isinstance(record.args, tuple) and len(record.args) > 2:
             try:
-                # Modificăm lista de argumente, decodând doar al treilea element (calea cererii)
                 args_list = list(record.args)
+                # Decodează elementul URL (index 2) direct în tuplu
                 args_list[2] = urllib.parse.unquote(args_list[2])
                 record.args = tuple(args_list)
             except Exception:
@@ -176,30 +72,114 @@ log_config = {
         },
     },
     "loggers": {
-        "uvicorn.access": {"handlers": [], "level": "INFO", "propagate": False},
+        "uvicorn.access": {
+            "handlers": [
+                #"access"      # Șterge simbolul # de mai jos dacă vrei să le AFIȘEZI iar în consolă.
+            ],
+            "level": "INFO",
+            "propagate": False,
+        },
     },
-
 }
 
 
-# 🚀 FUNCȚIA/CLASA SEPARATĂ CARE DECODEAZĂ LOGURILE ÎNAINTE DE AFIȘARE
-class DecodedAccessFormatter(AccessFormatter):
-    def format(self, record: logging.LogRecord) -> str:
-        # Verificăm dacă logul conține o linie de cerere HTTP (request_line)
-        if hasattr(record, "args") and len(record.args) > 2:
-            try:
-                # args[2] conține de obicei calea cererii (ex: /deepl/subtitles/...)
-                record.args = (
-                    record.args[0],
-                    record.args[1],
-                    urllib.parse.unquote(record.args[2]),  # Aici se produce magia decodării!
-                    *record.args[3:]
-                )
-            except Exception:
-                pass
-        return super().format(record)
+# --- LIFESPAN APLICAȚIE ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Pornim curățătorul automat de cache (funcția va fi definită mai jos în script)
+    try:
+        if "curata_cache_vechi" in globals():
+            asyncio.create_task(curata_cache_vechi())
+    except Exception:
+        pass
+    
+    try:
+        logging.config.dictConfig(log_config)
+    except Exception:
+        pass
+    yield
 
+# --- INIȚIALIZARE FASTAPI ---
+app = FastAPI(
+    title="Gemini AI Cloud Pool Addon", 
+    lifespan=lifespan,
+    root_path="/gemini"
+)
 
+# --- CONTOARE ȘI STRUCTURI CACHE TEMPORAR ÎN RAM ---
+contor_loti_esuate_per_user = {}
+CACHE_CHEI_INVALIDE_RAM = {}
+IP_BANATE_TEMPORAR = {}
+RECIDIVISTI_CONTOR = {}
+CACHE_DETALII_FILME_RAM = {}
+ISTORIC_CERERI_IP = {}
+
+# --- COZI ȘI CONECTIVITATE ACTIVĂ ---
+active_ips = set()
+keys_in_use = set()
+active_users = set()          # Ține minte ID-urile utilizatorilor activi
+printat_coada = set()
+film_activ_per_ip = {}
+film_activ_per_user = {}      # Ce film traduce fiecare ID: {id_utilizator: sub_id}
+CONTOR_ABUZ_FILME = {}        # Ține minte numărul de schimbări rapide: {id_utilizator: număr_abateri}
+ultimul_request_utilizator = {}
+
+# --- LOCK-URI DE SIGURANȚĂ (THREADING ȘI ASYNCIO UNIFICATE CHIRURGICAL) ---
+keys_lock = Lock()
+write_lock = Lock()  # LOCK-UL UNIC PENTRU COADĂ ȘI FIȘIER TEXT!
+pool_lock = Lock()
+gemini_speed_lock = asyncio.Lock()
+active_ips_lock = asyncio.Lock()
+film_activ_lock = asyncio.Lock()
+printat_coada_lock = asyncio.Lock()
+
+# --- CONFIGURARE ȘI FIȘIERE STOCARE ---
+DOMENIU_PUBLIC = "blagoie.com"
+CACHE_DIR = "translated_cache_gemini_v2"
+POOL_FILE_PATH = "gemini_pool_v2.txt"       # Toate cheile valide colectate
+LOG_FILE_PATH = "gemini_conexiuni_v2.txt"   # Evidența strictă a aparatelor și IP-urilor
+
+CALE_ABS_LOG = os.path.abspath(LOG_FILE_PATH)
+CALE_ABS_CACHE = os.path.abspath(CACHE_DIR)
+
+if not os.path.exists(CACHE_DIR):
+    os.makedirs(CACHE_DIR)
+
+# --- CONFIGURĂRI MOTOARE ȘI PARAMETRI GEMINI ---
+API_TIMEOUT = 300
+THINKING_LEVEL = "low"
+FIRST_BATCH_SIZE = 100
+NEXT_BATCH_SIZE = 300
+FIRST_BATCH_TIMEOUT = 300
+PAUZA_DUPA_EROARE = 10.0 
+
+# --- DIZPOZIȚIE MODELE ȘI DICTIONARE FILTRARE ---
+MODEL_PREFERAT = [
+    "gemini-flash-lite-latest",
+    "gemini-3-flash-preview",   
+    "gemini-3.5-flash",     
+    "gemini-flash-latest",     
+]
+
+STOP_WORDS = {
+    "ok", "okay", "yeah", "yes", "no", "nah", "yep", "yup", "oh", "ah", "wow", 
+    "hey", "ha", "haha", "huh", "uh", "um", "mmm", "hmm", "oops", "phew", 
+    "shh", "brrr", "sigh", "pant", "gasp", "laugh", "sob", "...", "..", "-", "--"
+}
+
+AD_PATTERNS = [
+    r"www\.[a-z0-9]+\.[a-z]{2,}", r"https?://[^\s]+", r"subtitles by|translated by",
+    r"OpenSubtitles|Subscene", r"support us|donate", r"@[a-z0-9_]+", r"Otabe-Fansub"
+]
+
+# --- ACTIVARE CORS MIDDLEWARE ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # 🛑 RUTELE PE CARE DOAR BOȚII LE DESCHID (CURĂȚAT ȘI EXTINS CU CELE NOI DIN LOGURI)
 RUTE_INTERZISE = [
@@ -209,31 +189,34 @@ RUTE_INTERZISE = [
 ]
 
 BLACKLIST_PATH = "/app/blacklist_v2.txt"
-write_lock = threading.Lock()
 
 # 🚀 ÎNCĂRCĂM LISTA NEAGRĂ ÎN MEMORIA RAM LA PORNIREA APLICAȚIEI
 IP_BLOCATE_RAM = set()
 if os.path.exists(BLACKLIST_PATH):
-    with open(BLACKLIST_PATH, "r", encoding="utf-8") as f:
-        for linie in f:
-            ip = linie.strip()
-            if ip:
-                IP_BLOCATE_RAM.add(ip)
-
+    try:
+        with open(BLACKLIST_PATH, "r", encoding="utf-8") as f:
+            for linie in f:
+                ip = linie.strip()
+                if ip:
+                    IP_BLOCATE_RAM.add(ip)
+    except Exception as e_init_bl:
+        pass
 def get_now():
-    """Returnează timestamp-ul curent formatat și colorat."""
+    """Returnează timestamp-ul curent formatat și colorat pentru consolă."""
     return f"[{CLR_TIME}{time.strftime('%H:%M:%S')}{CLR_RESET}]"
     
-## --- MONITORIZARE INTELIGENTĂ APARATE ȘI IP-URI (MIDDLEWARE) ---
+# ----------------------------------------------------------------------
+# 🛡️ ## --- MONITORIZARE INTELIGENTĂ APARATE ȘI IP-URI (MIDDLEWARE CENTRAL) ---
+# ----------------------------------------------------------------------
 @app.middleware("http")
 async def log_client_connections(request: Request, call_next):
-    # 1. Extragere IP real din Cloudflare
+    # 1. Extragere IP real din Cloudflare / Proxy-uri
     ip_real = request.headers.get("CF-Connecting-IP")
     if not ip_real:
         x_forwarded = request.headers.get("X-Forwarded-For", "")
         ip_real = x_forwarded.split(",")[0].strip() if x_forwarded else request.client.host
     
-    # 2. Forțăm Uvicorn să folosească IP-ul real în loguri
+    # 2. Forțăm Uvicorn să folosească IP-ul real în logurile sale interne
     try:
         old_client = request.scope.get("client")
         port = old_client.port if old_client else 0
@@ -248,12 +231,12 @@ async def log_client_connections(request: Request, call_next):
     if ip_real in IP_BLOCATE_RAM:
         return Response("Acces Interzis. IP-ul tau a fost blocat permanent.", status_code=403)
 
-    # --- VERIFICARE BAN TEMPORAR PROGRESIV ---
+    # --- VERIFICARE BAN TEMPORAR PROGRESIV ÎN RAM ---
     acum_timestamp = time.time()
     if ip_real in IP_BANATE_TEMPORAR:
-        # Dacă timpul de ban a expirat, îl eliberăm automat
+        # Dacă timpul de ban a expirat, îl eliberăm automat în siguranță
         if acum_timestamp > IP_BANATE_TEMPORAR[ip_real]:
-            del IP_BANATE_TEMPORAR[ip_real]
+            IP_BANATE_TEMPORAR.pop(ip_real, None)
             print(f"{get_now()} [{CLR_INFO}BAN EXPIRED{CLR_RESET}] IP-ul {ip_real} a ispășit pedeapsa și a fost deblocat.")
         else:
             timp_ramas = int(IP_BANATE_TEMPORAR[ip_real] - acum_timestamp)
@@ -266,67 +249,83 @@ async def log_client_connections(request: Request, call_next):
 
     cale_ceruta = request.url.path
 
-
-    # 🛑 4. SCUTUL AUTO-DEFENSIV: Dacă un IP nou accesează o rută de bot
+    # 🛑 4. SCUTUL AUTO-DEFENSIV: Dacă un IP nou accesează o rută de bot mizerabilă
     if cale_ceruta in RUTE_INTERZISE:
         if ip_real not in IP_BLOCATE_RAM:
             with write_lock:
-                with open(BLACKLIST_PATH, "a", encoding="utf-8") as f:
-                    f.write(f"{ip_real}\n")
+                try:
+                    with open(BLACKLIST_PATH, "a", encoding="utf-8") as f:
+                        f.write(f"{ip_real}\n")
+                except Exception as e_write_bl:
+                    print(f"[-] Eroare la scrierea pe disc în blacklist: {e_write_bl}")
                 IP_BLOCATE_RAM.add(ip_real)
             print(f"{get_now()} [{CLR_ALERT}FIREWALL AUTOMAT{CLR_RESET}] IP-ul {CLR_ALERT}{ip_real}{CLR_RESET} a accesat ruta de bot '{cale_ceruta}'. Blacklisted!")
 
         return Response("Acces Interzis. IP blocat.", status_code=403)
 
-    # 🛑 5. PROTECȚIE METODĂ
+    # 🛑 5. PROTECȚIE METODĂ HTTP VERB INSPECTION
     if request.method not in ["GET", "HEAD"] and cale_ceruta == "/":
         if ip_real not in IP_BLOCATE_RAM:
             with write_lock:
-                with open(BLACKLIST_PATH, "a", encoding="utf-8") as f:
-                    f.write(f"{ip_real}\n")
+                try:
+                    with open(BLACKLIST_PATH, "a", encoding="utf-8") as f:
+                        f.write(f"{ip_real}\n")
+                except Exception as e_write_bl:
+                    print(f"[-] Eroare la scrierea pe disc în blacklist: {e_write_bl}")
                 IP_BLOCATE_RAM.add(ip_real)
             print(f"{get_now()} [{CLR_ALERT}FIREWALL METODĂ{CLR_RESET}] IP-ul {CLR_ALERT}{ip_real}{CLR_RESET} blocat pentru metodă invalidă: {CLR_ALERT}{request.method}{CLR_RESET}!")
         return Response("Metoda Nepermisa.", status_code=405)
-
-    # --- DETECTARE APARATE ACTUALIZATĂ (INCLUDE DETECȚIE PC PE PLAYER NEEDLE) ---
+    # ----------------------------------------------------------------------
+    # 📝 6. DETECTARE APARATE ACTUALIZATĂ (INCLUDE PALETA DE CULORI CLR_DEV ȘI NEEDLE)
+    # ----------------------------------------------------------------------
     user_agent = request.headers.get("user-agent", "Aparat Necunoscut").lower()
-    aparat = "PC/Browser"
 
     if "web0s" in user_agent or "webos" in user_agent or "webappmanager" in user_agent:
-        aparat = "Televizor LG (WebOS)"
+        aparat = f"{CLR_DEV}Televizor LG (WebOS){CLR_RESET}"
     elif "tizen" in user_agent or "smart-tv" in user_agent or "smarttv" in user_agent:
-        aparat = "Televizor Samsung (Tizen)"
+        aparat = f"{CLR_DEV}Televizor Samsung (Tizen){CLR_RESET}"
     elif "libmpv" in user_agent or "mpv" in user_agent:
-        aparat = "Stremio Desktop / Player MPV"
+        aparat = f"{CLR_DEV}Stremio Desktop / Player MPV{CLR_RESET}"
     elif "needle" in user_agent:
         if "win32" in user_agent or "win64" in user_agent or "windows" in user_agent:
-            aparat = "Windows PC (Stremio/Player)"
+            aparat = f"{CLR_DEV}Windows PC (Stremio/Player){CLR_RESET}"
         elif "android" in user_agent:
-            aparat = "Aplicație Stremio (Android)"
+            aparat = f"{CLR_DEV}Aplicație Stremio (Android){CLR_RESET}"
         else:
-            aparat = "Smart TV / Box (Linux ARM)"
+            aparat = f"{CLR_DEV}Smart TV / Box (Linux ARM){CLR_RESET}"
     elif "ktor-client" in user_agent or "okhttp" in user_agent:
-        aparat = "Aplicație Stremio (Android/TV)"
+        aparat = f"{CLR_DEV}Aplicație Stremio (Android/TV){CLR_RESET}"
     elif "exoplayer" in user_agent or "vlc" in user_agent:
-        aparat = "Player Video (TV/Mobil)"
+        aparat = f"{CLR_DEV}Player Video (TV/Mobil){CLR_RESET}"
     elif "nuvio" in user_agent:
-        aparat = "Stremio via Addon Nuvio"
+        aparat = f"{CLR_DEV}Stremio via Addon Nuvio{CLR_RESET}"
     elif "aiostreams" in user_agent:
-        aparat = "Stremio via AioStreams"
+        aparat = f"{CLR_DEV}Stremio via AioStreams{CLR_RESET}"
     elif "aparat necunoscut" in user_agent or user_agent.strip() == "":
-        aparat = "Player Extern / Stremio TV"
+        aparat = f"{CLR_DEV}Player Extern / Stremio TV{CLR_RESET}"
     elif "stremio" in user_agent:
-        aparat = "Stremio (Android)" if "android" in user_agent else "Aplicație Stremio Desktop"
+        aparat = f"{CLR_DEV}Aplicație Stremio (Android){CLR_RESET}" if "android" in user_agent else f"{CLR_DEV}Aplicație Stremio Desktop{CLR_RESET}"
     elif "android" in user_agent:
-        aparat = "Telefon/Tabletă Android"
+        aparat = f"{CLR_DEV}Telefon/Tabletă Android{CLR_RESET}"
     elif "iphone" in user_agent or "ipad" in user_agent:
-        aparat = "iPhone/iPad (iOS)"
-# --- SALVARE LOGURI ȘI AFIȘARE ÎN TERMINAL (DATE EXTRASE FĂRĂ NAMEERROR) ---
+        aparat = f"{CLR_DEV}iPhone/iPad (iOS){CLR_RESET}"
+    else:
+        aparat = f"{CLR_DEV}PC/Browser{CLR_RESET}"
+
+    # ----------------------------------------------------------------------
+    # 📝 7. EXTRASEG DATE DIN URL (Formatul standard curat - FĂRĂ NAMEERROR)
+    # ----------------------------------------------------------------------
     if "/translate" in cale_ceruta or "/subtitles" in cale_ceruta:
         sub_id_match = re.search(r'(\d+)\.srt$', cale_ceruta)
         info_imdb_match = re.search(r'/(movie|series)/(tt\d+)', cale_ceruta, re.IGNORECASE)
         
         imdb_curent = info_imdb_match.group(2) if info_imdb_match else None
+
+        # 🔑 EXTRASEG CHEIA DIN URL (Strict pentru afișarea din consolă)
+        cheie_manifest = "Nespecificată"
+        match_cheie = re.search(r'/([^/]+)/(?:subtitles|translate)', cale_ceruta)
+        if match_cheie:
+            cheie_manifest = match_cheie.group(1)
 
         # 🌟 SOLUȚIE OBLIGATORIE: Definim toate piesele ca stringuri goale din start
         detalii_imdb = ""
@@ -342,26 +341,30 @@ async def log_client_connections(request: Request, call_next):
 
         if nume_fisier_match:
             raw_filename = nume_fisier_match.group(1)
-            if raw_filename.endswith(".json"): raw_filename = raw_filename[:-5]
+            if raw_filename.endswith(".json"): 
+                raw_filename = raw_filename[:-5]
             try:
                 import urllib.parse
                 detalii_fisier = f" | Fișier: {urllib.parse.unquote(raw_filename)}"
-            except Exception: detalii_fisier = f" | Fișier: {raw_filename}"
+            except Exception: 
+                detalii_fisier = f" | Fișier: {raw_filename}"
 
         if marime_match:
             bytes_size = int(marime_match.group(1))
-            detalii_marime = f" | Mărime: {bytes_size / 1073741824:.2f} GB" if bytes_size >= 1073741824 else f" | Mărime: {bytes_size / 1048576:.2f} MB"
+            if bytes_size >= 1073741824:
+                detalii_marime = f" | Mărime: {bytes_size / 1073741824:.2f} GB"
+            else:
+                detalii_marime = f" | Mărime: {bytes_size / 1048576:.2f} MB"
 
         hash_match = re.search(r'[&?]videoHash=([a-fA-F0-9]+)', cale_ceruta, re.IGNORECASE)
         if hash_match:
             detalii_hash = f" | Hash: {hash_match.group(1)}"
             
-        # Îmbinăm datele găsite local în această secundă (Asta rămâne completă pentru fișierul fizic .txt din pool)
+        # Îmbinăm datele găsite local (Asta rămâne completă pentru fișierul fizic .txt din pool)
         date_extrase_tot = f"{detalii_imdb}{detalii_fisier}{detalii_marime}{detalii_hash}"
         
         # 🎯 FORMATUL TĂU CURAT STANDARD (Strict detalii de identificare)
         date_extrase = f"{detalii_imdb}{detalii_fisier}"
-
         # 🌟 CITIRE TEXT DIN LOG: Dacă e translate oarbă, reconstruim fișa filmului
         if not marime_match and not nume_fisier_match and "/translate" in cale_ceruta:
             try:
@@ -397,26 +400,36 @@ async def log_client_connections(request: Request, call_next):
         # Generăm mesajul complet pentru fișierul fizic de log de pe Ubuntu
         info_film = f"Subtitrare ID: {sub_id_match.group(1) if sub_id_match else 'Necunoscut'}{date_extrase_tot}" if sub_id_match else f"Căutare Listă{date_extrase_tot}"
         
+        # 📝 Blocul tău original de scriere în fișier (RĂMÂNE FIX CUM L-AI SCRIS TU)
         with write_lock:
             data_curenta = time.strftime("%Y-%m-%d %H:%M:%S")
-            with open(LOG_FILE_PATH, "a", encoding="utf-8") as f_log:
-                f_log.write(f"[{data_curenta}] Dispozitiv: {aparat} | IP: {ip_real} | Actiune: {info_film}\n")
+            try:
+                with open(LOG_FILE_PATH, "a", encoding="utf-8") as f_log:
+                    f_log.write(f"[{data_curenta}] Dispozitiv: {aparat} | IP: {ip_real} | Actiune: {info_film}\nCheie: {cheie_manifest}\n")
+            except Exception as e_write_log:
+                print(f"[-] Eroare la scrierea logului pe disc: {e_write_log}")
         
         # 🚀 REPARAT CHIRURGICAL: Ne asigurăm că variabila „date_extrase” este forțată să NU aibă mărime/hash live!
-        # Curățăm suplimentar stringul în caz că au scăpat din blocurile de mai sus
         date_extrase_curatate = re.sub(r'\|\s*Mărime:[^|]*', '', date_extrase, flags=re.IGNORECASE).strip()
         date_extrase_curatate = re.sub(r'\|\s*Hash:[^|]*', '', date_extrase_curatate, flags=re.IGNORECASE).strip()
         
         if date_extrase_curatate and not date_extrase_curatate.startswith("|"):
             date_extrase_curatate = " | " + date_extrase_curatate
             
-        # 🚀 SALVAREA FINALĂ ÎN STAREA CERERII: Acum va fi întotdeauna IDENTICĂ pe ambele rute (Cache și Coadă)!
+        # 🚀 SALVAREA FINALĂ ÎN STAREA CERERII: Linia ta perfectă în care ai încredere
         request.state.date_extrase = f"{aparat}{date_extrase_curatate}"
+
+        # 🎯 ADAUGĂM PRINT-UL IN TERMINAL: Ia exact starea ta curată și îi pune cheia la sfârșit!
+        # Curățăm doar spațiile duble sau barele lipite pentru consolă
+        linie_consola = f"[{data_curenta}] {request.state.date_extrase} | Cheie: {cheie_manifest}"
+        linie_consola = linie_consola.replace(" |", " | ").replace("  |", " |").replace("|  |", "|").replace("| |", "|")
+        # print(linie_consola.strip(), flush=True)
             
     response = await call_next(request)
     return response
-
-
+# ----------------------------------------------------------------------
+# 🛡️ 10. SCUT RATE-LIMIT LIVE PE MEMORIA RAM
+# ----------------------------------------------------------------------
 def verifica_rate_limit_ip(ip: str, user_id="WebPage") -> bool:
     """
     Verifică dacă un IP a depășit limita de 5 cereri pe minut.
@@ -454,7 +467,9 @@ def verifica_rate_limit_ip(ip: str, user_id="WebPage") -> bool:
     ISTORIC_CERERI_IP[ip].append(acum)
     return True
 
-# --- MANAGEMENT DINAMIC POOL COMUN DE CHEI (CLOUD POOL) ---
+# ----------------------------------------------------------------------
+# 🔑 --- MANAGEMENT DINAMIC POOL COMUN DE CHEI (CLOUD POOL) ---
+# ----------------------------------------------------------------------
 
 def get_shared_pool_keys():
     """Citește în timp real toate cheile valide stocate de la toți utilizatorii în gemini_pool.txt"""
@@ -468,7 +483,7 @@ def get_shared_pool_keys():
             print(f"{get_now()} [{CLR_ALERT}POOL ERROR{CLR_RESET}] Eroare la citirea pool-ului comun de chei: {e}")
     return keys_list
 
-def add_keys_to_shared_pool(new_keys):
+def add_keys_to_shared_pool(new_keys, ip_real="Unknown"):
     """Adaugă chei noi în fișierul centralizat, asigurându-se că nu se dublează liniile"""
     if not new_keys:
         return
@@ -485,9 +500,10 @@ def add_keys_to_shared_pool(new_keys):
                 with open(POOL_FILE_PATH, "a", encoding="utf-8") as f:
                     for k in keys_to_add:
                         f.write(f"{k}\n")
-                print(f"{get_now()} [{CLR_RUN}SYSTEM{CLR_RESET}] S-au adăugat {CLR_RUN}{len(keys_to_add)}{CLR_RESET} chei noi în gemini_pool.txt.")
+                # 🎯 MODIFICAT: S-a adăugat IP-ul direct în mesajul tău standard din consolă
+                print(f"{get_now()} [{CLR_RUN}SYSTEM{CLR_RESET}] IP: {CLR_RUN}{ip_real}{CLR_RESET} | S-au adăugat {CLR_RUN}{len(keys_to_add)}{CLR_RESET} chei noi în gemini_pool.txt.")
             except Exception as e:
-                print(f"{get_now()} [{CLR_ALERT}POOL ERROR{CLR_RESET}] Eroare la salvarea cheilor în pool-ul comun: {e}")
+                print(f"{get_now()} [{CLR_ALERT}POOL ERROR{CLR_RESET}] IP: {CLR_ALERT}{ip_real}{CLR_RESET} | Eroare la salvarea cheilor în pool-ul comun: {e}")
 
 def validate_single_key_live(api_key, user_id="Public", ip_real="Unknown"):
 
@@ -561,12 +577,10 @@ def validate_single_key_live(api_key, user_id="Public", ip_real="Unknown"):
             
     # 🛑 SCUTUL DE SECURITATE REPARAT: Dacă s-a parcurs toată lista de modele și NICIUNUL 
     # nu a putut întoarce un cod curat de 200 OK, cheia este 100% INVALIDĂ sau MOARTĂ.
-    print(f"{get_now()} [{CLR_ALERT}KEY REJECTED{CLR_RESET}] Cheia {api_key[:15]}.a eșuat FALSA! | IP: {CLR_RUN}{ip_real}{CLR_RESET} | ID: {CLR_RUN}{user_id}{CLR_RESET}")
+    #print(f"{get_now()} [{CLR_ALERT}KEY REJECTED{CLR_RESET}] Cheia {api_key[:18]}.a eșuat FALSA! | IP: {CLR_RUN}{ip_real}{CLR_RESET} | ID: {CLR_RUN}{user_id}{CLR_RESET}")
     return False
-
-
 def validate_user_keys_batch(keys_list, user_id="Public", ip_real="Unknown"):
-    """Validează o lista de chei sosite de la un utilizator, pasând mai departe IP-ul și ID-ul."""
+    """Validează o listă de chei sosite de la un utilizator, pasând mai departe IP-ul și ID-ul."""
     valid_keys = []
     for k in keys_list:
         # Pasăm variabilele către funcția de validare live
@@ -575,8 +589,8 @@ def validate_user_keys_batch(keys_list, user_id="Public", ip_real="Unknown"):
     return valid_keys
 
 
-def split_smart_long_line(text, max_chars=44):
-    """Logica ta avansată de tăiere a rândurilor lungi din Kodi"""
+def split_smart_long_line(text, max_chars=43):
+    """Logica ta avansată de tăiere a rândurilor lungi adaptată strict la 43 de caractere"""
     if not text or len(text) <= max_chars or "\n" in text:
         return text
     
@@ -607,7 +621,10 @@ def split_smart_long_line(text, max_chars=44):
             if 0 < pos < len(text) and text[pos] == ' ':
                 return text[:pos].strip() + "\n" + text[pos:].strip()
     return text
+
+
 def _build_prompt(target_lang, num_texts):
+    """Generează dinamic instrucțiunile de traducere culturală transmise către Gemini"""
     LANG_SPECIFIC = {
         'ro': {
             'name': 'Romanian',
@@ -636,7 +653,7 @@ def _build_prompt(target_lang, num_texts):
         'de': {'name': 'German', 'diacritics': 'Use all German special characters correctly.', 'style': '- Use natural spoken German.\n'},
         'it': {'name': 'Italian', 'diacritics': 'Use all Italian accents correctly.', 'style': '- Use natural spoken Italian.\n'},
         'pt': {'name': 'Portuguese', 'diacritics': 'Use all Portuguese accents correctly.', 'style': '- Use natural Portuguese.\n'},
-        'hu': {'name': 'Hungarian', 'diacritics': 'Use all Hungarian accents correctly.', 'style': '- Use natural spoken Hungarian.\n'},
+        'hu': {'name': 'Hungarian', 'diacritics': 'Use all Hungarian accents correctly: á, é, í, ó, ó, ú, ú, ü, ű.', 'style': '- Use natural spoken Hungarian.\n'},
         'ru': {'name': 'Russian', 'diacritics': 'Use correct Russian Cyrillic characters.', 'style': '- Use natural spoken Russian.\n'},
         'tr': {'name': 'Turkish', 'diacritics': 'Use all Turkish special characters correctly.', 'style': '- Use natural spoken Turkish.\n'},
         'bg': {'name': 'Bulgarian', 'diacritics': 'Use correct Bulgarian Cyrillic characters.', 'style': '- Use natural spoken Bulgarian.\n'},
@@ -663,7 +680,7 @@ Translate ALL subtitle texts below into natural, modern, impactful {lang_name}.
 
 **OUTPUT FORMAT (CRITICAL):**
 - Return ONLY a valid JSON array of objects. No markdown, no code fences.
-- Format strictly as: [{{"index": "ID", "text": "translated text"}}]
+- Format strictly as: [{{{"index": "ID", "text": "translated text"}}}]
 - You MUST return exactly {num_texts} items in the array.
 
 **MULTILINGUAL SOURCE HANDLING:**
@@ -691,6 +708,9 @@ Remove these filler sounds/interjections entirely: Aaah, Aah, Ah, Ahem, Ahh, Arg
 **CRITICAL ANTI-SHIFTING RULES:**
 - Text from input index X MUST remain in output index X.
 - If a single sentence is broken across two indices, translate the broken parts EXACTLY where they are. Do NOT combine them."""
+# ----------------------------------------------------------------------
+# 🏎️ 13. MOTORUL ASINCRON DE TRADUCERE ÎN LOTURI (GOOGLE GEMINI API)
+# ----------------------------------------------------------------------
 def translate_gemini(texts_dict, target_lang, api_key, model_name, timeout=API_TIMEOUT, thinking_level=THINKING_LEVEL):
     url = f"https://generativelanguage.googleapis.com/v1alpha/models/{model_name}:generateContent?key={api_key}"
     
@@ -1293,7 +1313,7 @@ def validate_web_keys(keys: str, request: Request):
     if not verified or len(verified) < 3:
         return {"status": "error"}
         
-    add_keys_to_shared_pool(verified)
+    add_keys_to_shared_pool(verified, ip_real)
     return {
         "status": "ok",
         "count": len(verified),
@@ -1306,21 +1326,10 @@ def get_manifest_configured(request: Request, api_keys: str, lang: str):
     ip_real = request.client.host if (request.client and request.client.host) else "Unknown"
     user_agent_real = request.headers.get("User-Agent", "Unknown Device")
 
-    # 🚨 SCUT ANTI-SPAM MANIFEST PROGRESIV (Oprește inundarea consolei):
-    # Trimitem ID-ul "Manifest". Funcția utilitară va printa o singură dată Alerta Mare,
-    # va aplica banul progresiv în RAM, iar la cererile următoare middleware-ul tău central 
-    # îl va bloca direct în tăcere totală (403), fără să mai inunde consola!
-    if ip_real != "Unknown" and not verifica_rate_limit_ip(ip_real, "Manifest"):
-        from fastapi import HTTPException
-        raise HTTPException(status_code=429, detail="Spam detected. Temporarily banned.")
-
-    # 📝 LOGARE ÎN ISTORICUL TEXT
-    try:
-        with open(LOG_FILE_PATH, "a", encoding="utf-8") as f_log:
-            timp_curent = time.strftime('%Y-%m-%d %H:%M:%S')
-            f_log.write(f"[{timp_curent}] MANIFEST - IP: {ip_real} | Device: {user_agent_real} | Lang: {lang.upper()}\n")
-    except Exception as log_err:
-        print(f"[-] Eroare la scrierea în istoricul text: {log_err}")
+    # 🚨 SCUT ANTI-SPAM MANIFEST PROGRESIV STRICT ÎN MEMORIA RAM (IDENTIC CU WEB):
+    if ip_real != "Unknown":
+        if not verifica_rate_limit_ip(ip_real, "Manifest"):
+            return Response("Too many requests. Your IP has been temporarily banned.", status_code=429)
 
     # 🌟 REPARATIE STEAGURI: Generăm steagul dinamic chiar la începutul funcției ca să fie accesibil peste tot!
     steaguri = {
@@ -1330,14 +1339,60 @@ def get_manifest_configured(request: Request, api_keys: str, lang: str):
     }
     steag_ales = steaguri.get(lang.lower(), "🌐")
 
+    # 📝 LOGARE ÎN ISTORICUL TEXT (Rămâne doar logul tău normal de vizionare)
+    try:
+        with open(LOG_FILE_PATH, "a", encoding="utf-8") as f_log:
+            timp_curent = time.strftime('%Y-%m-%d %H:%M:%S')
+            f_log.write(f"[{timp_curent}] MANIFEST - IP: {ip_real} | Device: {user_agent_real} | Lang: {lang.upper()}\n")
+    except Exception as log_err:
+        print(f"[-] Eroare la scrierea în istoricul text: {log_err}")
+
+    # 🍀 🚀 EXCEPȚIE CRITICĂ PENTRU LINKUL ORIGINAL (api_keys="1"):
+    if api_keys.strip() == "1":
+        print(f"{get_now()} [{CLR_RUN}MANIFEST ORIGINAL{CLR_RESET}] IP: {ip_real} a deschis link-ul de Configure.")
+        return {
+            "id": f"community.stremio.geminii.batch.translator.{lang.lower()}",
+            "version": "1.7.1",
+            "name": f"{steag_ales}-GEMINI AI",
+            "description": f"Te rog configurează addon-ul. Introdu minimum 3 chei API valide pentru limba {lang.upper()}.",
+            "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8f/Google-gemini-icon.svg/960px-Google-gemini-icon.svg.png",
+            "resources": [], 
+            "types": [],     
+            "catalogs": [],
+            "configurationURL": f"https://{DOMENIU_PUBLIC}/gemini/configure",
+            "behaviorHints": {
+                "configurable": True,
+                "configurationRequired": True
+            }
+        }
+
+    # 🕵️‍♂️ GENERARE ID UNIC DIN CHEI (Sincronizat 100% cu algoritmul tău SHA256 din /translate)
+    id_utilizator_scurt = "Public"
+    if api_keys and api_keys.strip():
+        try:
+            import hashlib
+            hash_complet = hashlib.sha256(api_keys.encode('utf-8')).hexdigest()
+            id_utilizator_scurt = hash_complet[:8]
+        except Exception:
+            id_utilizator_scurt = "EroareID"
+
+    # 🚨 SCUT INTERCEPTARE MEMORIE RAM: Dacă grupul de chei sau IP-ul sunt deja penalizate activ strict pe Manifest
+    acum_timestamp = time.time()
+    if id_utilizator_scurt in CACHE_CHEI_INVALIDE_RAM or ip_real in IP_BANATE_TEMPORAR:
+        timp_expirare = max(CACHE_CHEI_INVALIDE_RAM.get(id_utilizator_scurt, 0), IP_BANATE_TEMPORAR.get(ip_real, 0))
+        if acum_timestamp < timp_expirare:
+            return Response("Too many requests. Temporarily banned on Manifest.", status_code=429)
+        else:
+            CACHE_CHEI_INVALIDE_RAM.pop(id_utilizator_scurt, None)
+            IP_BANATE_TEMPORAR.pop(ip_real, None)
+
     user_keys = [k.strip() for k in api_keys.split(",") if k.strip()]
     
-    # 🎯 MODIFICAT CHIRURGICAL: Trimitem ID-ul "Manifest" și variabila ip_real extrasă mai sus
+    # 🎯 VALIDARE LIVE BATCH (Rulează doar dacă este un grup de chei complet nou)
     verified_keys = validate_user_keys_batch(user_keys, "Manifest", ip_real)
-    
     # 🚀 PĂCĂLIM VALIDAREA DE TEST A CATALOGULUI PUBLIC STREMIO:
-    if not verified_keys or "1" in user_keys or lang.lower() == "ro":
-        return {
+    if not verified_keys or lang.lower() == "ro":
+        manifest_păcălit = {
             "id": f"community.stremio.geminii.batch.translator.{lang.lower()}",
             "version": "1.7.1",
             "name": f"{steag_ales}-GEMINI AI",
@@ -1352,15 +1407,69 @@ def get_manifest_configured(request: Request, api_keys: str, lang: str):
                 "configurationRequired": False
             }
         }
+        
+        # 🚨 LOGICĂ COMPORTAMENTALĂ INTELIGENTĂ PE RUTA DE BATCH BLOCAT:
+        if len(verified_keys) < 3:
+            # 1️⃣ ID-ul (grupul de chei proaste) își ia BAN PERMANENT pe loc în RAM
+            CACHE_CHEI_INVALIDE_RAM[id_utilizator_scurt] = acum_timestamp + (10 * 365 * 24 * 60 * 60)
+            
+            # 2️⃣ Incrementăm contorul de abateri pentru IP-ul fizic
+            RECIDIVISTI_CONTOR[ip_real] = RECIDIVISTI_CONTOR.get(ip_real, 0) + 1
+            abateri_ip = RECIDIVISTI_CONTOR[ip_real]
+            
+            este_ip_permanent = False
+            ip_isi_ia_ban_acum = False
+            text_durata = "0m (Liber)"
 
-    add_keys_to_shared_pool(verified_keys)
+            # 🎯 TREAPTA 1: Ia ban de 10 minute DOAR CÂND ATINGE EXACT 3 ABATERI!
+            if abateri_ip <= 3:
+                if abateri_ip == 3:
+                    IP_BANATE_TEMPORAR[ip_real] = acum_timestamp + (10 * 60)
+                    text_durata = "10m"
+                    ip_isi_ia_ban_acum = True
+
+            # 🎯 TREAPTA 2: Ia ban de 1 oră DOAR CÂND ATINGE EXACT 6 ABATERI!
+            elif 4 <= abateri_ip <= 6:
+                if abateri_ip == 6:
+                    IP_BANATE_TEMPORAR[ip_real] = acum_timestamp + (1 * 60 * 60)
+                    text_durata = "1h"
+                    ip_isi_ia_ban_acum = True
+
+            # 🎯 TREAPTA 3: DUPĂ ACEEA (Abaterea 7+) -> BAN PERMANENT PE IP PE MANIFEST (Disc + RAM)
+            else:
+                este_ip_permanent = True
+                ip_isi_ia_ban_acum = True
+                text_durata = "PERMANENT"
+                if ip_real not in IP_BLOCATE_RAM:
+                    with write_lock:
+                        with open(BLACKLIST_PATH, "a", encoding="utf-8") as f_black:
+                            f_black.write(f"{ip_real}\n")
+                        IP_BLOCATE_RAM.add(ip_real)
+
+            # Print elegant în consolă pe stilul tău exact cu culori
+            if este_ip_permanent:
+                print(f"{get_now()} [{CLR_ALERT}FIREWALL MANIFEST{CLR_RESET}] ID: {CLR_RUN}{id_utilizator_scurt}{CLR_RESET} BANAT PERMANENT! IP: {CLR_ALERT}{ip_real}{CLR_RESET} blocat definitiv pe disc (Abaterea {abateri_ip}).")
+            elif ip_isi_ia_ban_acum:
+                print(f"{get_now()} [{CLR_ALERT}RATE MANIFEST{CLR_RESET}] ID: {CLR_RUN}{id_utilizator_scurt}{CLR_RESET} BAN PERMANENT! IP: {CLR_ALERT}{ip_real}{CLR_RESET} a atins pragul fix. Penalizat în RAM pentru {text_durata} (Abaterea {abateri_ip}/6).")
+            else:
+                print(f"{get_now()} [{CLR_WARN}MANIFEST WARN{CLR_RESET}] ID: {CLR_RUN}{id_utilizator_scurt}{CLR_RESET} BAN PERMANENT! IP: {CLR_RUN}{ip_real}{CLR_RESET} lăsat LIBER (Abaterea {abateri_ip}/3 până la banul de 10m).")
+
+            manifest_păcălit["resources"] = []
+            manifest_păcălit["types"] = []
+            manifest_păcălit["behaviorHints"]["configurationRequired"] = True
+            
+        return manifest_păcălit
+
+    add_keys_to_shared_pool(verified_keys, ip_real)
     
-    # 🚀 REPARAT CHIRURGICAL CHEI: Generăm o mică bucățică din prima cheie ca să spargem loop-ul în Stremio
-    amprenta_chei = verified_keys[0][:6] if verified_keys else "pool"
-    id_unic_update = f"community.stremio.geminii.batch.translator.{lang.lower()}.{amprenta_chei}"
+    # ID-ul de bază stabil pentru situația în care utilizatorul are chei dar sunt insuficiente
+    id_unic_baza = f"community.stremio.geminii.batch.translator.{lang.lower()}"
     
-    # Blocul de return final în caz de chei corecte:
-    return {
+    # 🚀 REPARAT CHIRURGICAL CHEI: Generăm o mică bucățică din prima cheie ca să spargem loop-ul în Stremio DOAR dacă cheile sunt bune!
+    amprenta_chei = verified_keys[:6] if verified_keys else "pool"
+    id_unic_update = f"{id_unic_baza}.{amprenta_chei}"
+    
+    manifest_final = {
         "id": id_unic_update, 
         "version": "1.7.1",
         "name": f"{steag_ales}-GEMINI AI",
@@ -1375,6 +1484,41 @@ def get_manifest_configured(request: Request, api_keys: str, lang: str):
             "configurationRequired": False
         }
     }
+
+    # 🚨 REPARAT: LOGICA DE PENALIZARE PENTRU VERIFICAREA LIVE DIN POOL
+    if len(verified_keys) < 3:
+        # 1️⃣ ID-ul (grupul de chei false) își ia BAN PERMANENT pe loc în RAM
+        CACHE_CHEI_INVALIDE_RAM[id_utilizator_scurt] = acum_timestamp + (10 * 365 * 24 * 60 * 60)
+        
+        # 2️⃣ Incrementăm contorul de abateri pentru IP
+        RECIDIVISTI_CONTOR[ip_real] = RECIDIVISTI_CONTOR.get(ip_real, 0) + 1
+        abateri_ip = RECIDIVISTI_CONTOR[ip_real]
+        
+        # 🎯 TREAPTA 1: Ia ban de 10 minute DOAR CÂND ATINGE EXACT 3 ABATERI!
+        if abateri_ip <= 3:
+            if abateri_ip == 3:
+                IP_BANATE_TEMPORAR[ip_real] = acum_timestamp + (10 * 60)
+        # 🎯 TREAPTA 2: Ia ban de 1 oră DOAR CÂND ATINGE EXACT 6 ABATERI!
+        elif 4 <= abateri_ip <= 6:
+            if abateri_ip == 6:
+                IP_BANATE_TEMPORAR[ip_real] = acum_timestamp + (1 * 60 * 60)
+        # 🎯 TREAPTA 3: DUPĂ ACEEA (Abaterea 7+) -> BAN PERMANENT PE IP (Disc + RAM)
+        else:
+            if ip_real not in IP_BLOCATE_RAM:
+                with write_lock:
+                    with open(BLACKLIST_PATH, "a", encoding="utf-8") as f_black: 
+                        f_black.write(f"{ip_real}\n")
+                    IP_BLOCATE_RAM.add(ip_real)
+
+        print(f"{get_now()} [{CLR_ALERT}RATE MANIFEST{CLR_RESET}] ID: {CLR_RUN}{id_utilizator_scurt}{CLR_RESET} BAN PERMANENT! IP: {CLR_RUN}{ip_real}{CLR_RESET} blocat din verificarea live (Abaterea {abateri_ip}).")
+        
+        manifest_final["id"] = id_unic_baza  # Forțăm ID-ul stabil ca Stremio să recunoască ruta de update
+        manifest_final["resources"] = []
+        manifest_final["types"] = []
+        manifest_final["behaviorHints"]["configurationRequired"] = True
+
+    return manifest_final
+
 
 @app.get("/api_keys={api_keys}_lang={lang}/configure", response_class=HTMLResponse)
 def get_configuration_page_fallback(api_keys: str, lang: str):
@@ -1395,7 +1539,8 @@ def get_subtitles(api_keys: str, video_type: str, imdb_id: str, lang: str, extra
     subtitles_list = []
     os_url = f"https://rest.opensubtitles.org/search/{query_path}"
     try:
-        r = requests.get(os_url, headers={'User-Agent': 'HotSubtitlesV1'}, timeout=10)
+        # Adăugăm proxies=... ca să ocolim host-ul greșit '_' din VPS
+        r = requests.get(os_url, headers={'User-Agent': 'HotSubtitlesV1'}, proxies={"http": None, "https": None}, timeout=10)
         if r.ok:
             for item in r.json():
                 sub_id = item.get('IDSubtitleFile')
@@ -1482,19 +1627,24 @@ async def translate_on_demand(request: Request, api_keys: str, sub_id: str, lang
             CACHE_CHEI_INVALIDE_RAM.pop(id_utilizator_scurt, None)
             IP_BANATE_TEMPORAR.pop(ip_real, None)
 
-    # 🚀 2. VERIFICARE CACHE (Instant, cu auto-sincronizare la conectare)
+# 🚀 2. VERIFICARE CACHE (Instant, cu auto-sincronizare la conectare)
     cache_path = os.path.join(CACHE_DIR, f"{sub_id}_{lang.lower()}.srt")
     if os.path.exists(cache_path):
         await asyncio.sleep(3)
         date_extrase_salvate = getattr(request.state, "date_extrase", "")
-        print(f"{get_now()} {CLR_INFO}{date_extrase_salvate}{CLR_RESET}")
+        
+        # ✂️ TĂIERE INTELIGENTĂ CARACTERE (Oprește întinderea textului pe tot ecranul)
+        if date_extrase_salvate.strip():
+            text_scurtat_cache = date_extrase_salvate[:105] + "..." if len(date_extrase_salvate) > 110 else date_extrase_salvate
+            print(f"{get_now()} {CLR_INFO}{text_scurtat_cache}{CLR_RESET}")
+            
         print(f"{get_now()} [{CLR_INFO}GEMINI   CACHE{CLR_RESET}] ID: {CLR_RUN}{id_utilizator_scurt}{CLR_RESET} IP: {CLR_RUN}{ip_real}{CLR_RESET}  [{lang.upper()}] | SubID: {sub_id}")
         
         with open(cache_path, "r", encoding="utf-8") as f:
             return Response(content=f.read(), media_type="text/srt; charset=utf-8")
 
 
-    # 🔒 3. SCUTUL ANTI-DUPLICAT ȘI STREAMING SILENȚIOS (BLOCARE PE ID UTILIZATOR IN DOCKER)
+# 🔒 3. SCUTUL ANTI-DUPLICAT ȘI STREAMING SILENȚIOS (BLOCARE PE ID UTILIZATOR IN DOCKER)
     async with active_ips_lock:
         if id_utilizator_scurt in active_users:
             async with film_activ_lock:
@@ -1504,6 +1654,9 @@ async def translate_on_demand(request: Request, api_keys: str, sub_id: str, lang
             if id_film_in_curs and id_film_in_curs != sub_id:
                 acum_timp = time.time()
                 
+                # Extragem timpul primei greșeli din istoric înainte ca variabila să fie suprascrisă
+                timp_prima_greseala = ultimul_request_utilizator.get(id_utilizator_scurt, acum_timp)
+
                 # --- AUTO-RESET INDIVIDUAL LA 30 DE MINUTE ---
                 # Dacă utilizatorul are abateri vechi, dar au trecut mai mult de 30 de minute (1800s) de la ultima lui greșeală, îl iertăm și resetăm contorul la 0!
                 if id_utilizator_scurt in ultimul_request_utilizator:
@@ -1519,8 +1672,42 @@ async def translate_on_demand(request: Request, api_keys: str, sub_id: str, lang
                 # Salvăm timestamp-ul acestei ultime acțiuni în dicționarul tău existent
                 ultimul_request_utilizator[id_utilizator_scurt] = acum_timp
 
-                # --- BLOCUL DE BAN DIRECT (Abateri >= 3) ---
+                # --- BLOCUL DE BAN DIRECT (Abateri >= 3 și Permanent la 10 în 5 minute la toți) ---
                 if abateri_film >= 3:
+                    
+                    # 🚀 LOGICĂ PRAG ATINS LA TOȚI UTILIZATORII / ROBOȚII
+                    este_ban_permanent = False
+                    
+                    if abateri_film >= 10:
+                        # Dacă a strâns 10 abateri într-un timp mai mic sau egal cu 5 minute (300 secunde) -> E SIGUR BOT SAU SCRIPT DEFECT!
+                        if acum_timp - timp_prima_greseala <= 300:
+                            este_ban_permanent = True
+                        else:
+                            # Dacă i-a luat mai mult de 5 minute (este om și a citit avertismentele SRT), îl lăsăm doar în ban de 1 oră
+                            CONTOR_ABUZ_FILME[id_utilizator_scurt] = 3
+                            print(f"{get_now()} [SYSTEM RAM] ID: {id_utilizator_scurt} a făcut 10 abateri dar lent (peste 5 min). Rămâne doar în ban temporar.")
+
+                    # 🚨 BAN PERMANENT INDIFERENT DE USER-AGENT (PRINS DE REGLA CELOR 5 MINUTE)
+                    if este_ban_permanent:
+                        if ip_real not in IP_BLOCATE_RAM:
+                            with write_lock:
+                                # Salvăm fizic IP-ul pe disc în blacklist_v2.txt
+                                with open(BLACKLIST_PATH, "a", encoding="utf-8") as f_black:
+                                    f_black.write(f"{ip_real}\n")
+                                # Îl blocăm instantaneu în memoria RAM
+                                IP_BLOCATE_RAM.add(ip_real)
+                            
+                            print(f"{get_now()} [{CLR_ALERT}FIREWALL LIVE{CLR_RESET}] IP-ul {CLR_ALERT}{ip_real}{CLR_RESET} blocat definitiv! Detecție: Viteză Spam ({abateri_film} abuzuri în < 5 min). Adăugat în blacklist_v2.txt.")
+                            
+                            # Curățăm forțat toate reziduurile din listele active din RAM în această microsecundă
+                            if id_utilizator_scurt in active_users: active_users.remove(id_utilizator_scurt)
+                            if id_utilizator_scurt in film_activ_per_user: del film_activ_per_user[id_utilizator_scurt]
+                            if 'filme_active_id' in locals() and id_utilizator_scurt in filme_active_id: del filme_active_id[id_utilizator_scurt]
+                            if 'filme_active_ip' in locals() and ip_real in filme_active_ip: del filme_active_ip[ip_real]
+
+                        return Response("Acces interzis permanent. IP blocat.", status_code=403)
+
+                    # 🔒 DACĂ SUNTEM ÎNTRE ABATERILE 3 ȘI 9 (Utilizator normal pe Stremio oficial, blocat temporar 1 oră)
                     print(f"{get_now()} [{CLR_ALERT}AUTO-BAN ID{CLR_RESET}] ID: {CLR_RUN}{id_utilizator_scurt}{CLR_RESET} IP: {CLR_RUN}{ip_real}{CLR_RESET} a fost blocat pe cereri noi de subtitrări.")
                     
                     chunk_ban = (
@@ -1546,7 +1733,6 @@ async def translate_on_demand(request: Request, api_keys: str, sub_id: str, lang
                     "Go back to the first subtitle you selected and allow it to load.\n\n"
                 )
                 return Response(content=chunk_schimbare, media_type="text/plain; charset=utf-8")
-            
             # CAZUL B: Streaming silențios de spații invizibile anti-timeout (Utilizatorul deja așteaptă aceeași traducere)
             async def srt_silent_stream_generator():
                 timeout_maximum = 45
@@ -1632,9 +1818,10 @@ async def translate_on_demand(request: Request, api_keys: str, sub_id: str, lang
                 # Dacă nu există (de ex. la o cerere web simplă), returnează string gol ca să nu dea NameError!
                 date_extrase_salvate = getattr(request.state, "date_extrase", "")
                 
-                # Printează fișa curată a filmului în culoarea albastră direct deasupra cozii
+                # Printează fișa curată a filmului în culoarea albastră, dar scurtată la 110 caractere ca să nu spargă ecranul
                 if date_extrase_salvate.strip():
-                    print(f"{get_now()} {CLR_INFO}{date_extrase_salvate}{CLR_RESET}")
+                    text_scurtat_queue = date_extrase_salvate[:105] + "..." if len(date_extrase_salvate) > 110 else date_extrase_salvate
+                    print(f"{get_now()} {CLR_INFO}{text_scurtat_queue}{CLR_RESET}")
                 
                 # Logul tău original de coadă cyan neatins
                 print(f"{get_now()} [{CLR_QUEUE}GEMINI   QUEUE{CLR_RESET}] ID: {CLR_QUEUE}{id_utilizator_scurt}{CLR_RESET} IP: {CLR_QUEUE}{ip_real}{CLR_RESET}  [{lang.upper()}] | Total la rând: {CLR_QUEUE}{total_coada}{CLR_RESET}")
@@ -1820,7 +2007,7 @@ async def translate_on_demand(request: Request, api_keys: str, sub_id: str, lang
 
                     yield full_srt
 
-                    print(f"{get_now()} [{CLR_COOL}GEMINI Tradusă{CLR_RESET}] ID: {CLR_COOL}{id_utilizator_scurt}{CLR_RESET} IP: {CLR_COOL}{ip_real}{CLR_RESET}   SubID: {sub_id} Pauză 30s")
+                    print(f"{get_now()} [{CLR_COOL}GEMINI Tradusă{CLR_RESET}] ID: {CLR_COOL}{id_utilizator_scurt}{CLR_RESET} IP: {CLR_COOL}{ip_real}{CLR_RESET}  SubID: {sub_id} Pauză 30s")
                     
                     cooling_timer = 0
                     while cooling_timer < 30:
@@ -1985,4 +2172,3 @@ signal.signal(signal.SIGUSR2, reseteaza_ram_din_consola)
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8003, log_config=log_config)
-
