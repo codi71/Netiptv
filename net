@@ -1,4 +1,3 @@
-
 import os
 import sys
 import time
@@ -152,7 +151,72 @@ THINKING_LEVEL = "low"
 FIRST_BATCH_SIZE = 100
 NEXT_BATCH_SIZE = 300
 FIRST_BATCH_TIMEOUT = 300
-PAUZA_DUPA_EROARE = 10.0 
+PAUZA_DUPA_EROARE = 10.0
+ 
+LANGUAGES_DATA = {
+    "ro": {"lang3": "rum", "name": "Romanian", "flag": "🇷🇴"},
+    "en": {"lang3": "eng", "name": "English", "flag": "🇬🇧"},
+    "fr": {"lang3": "fre", "name": "French", "flag": "🇫🇷"},
+    "de": {"lang3": "ger", "name": "German", "flag": "🇩🇪"},
+    "it": {"lang3": "ita", "name": "Italian", "flag": "🇮🇹"},
+    "es": {"lang3": "spa", "name": "Spanish", "flag": "🇪🇸"},
+    "pt": {"lang3": "por", "name": "Portuguese", "flag": "🇵🇹"},
+    "el": {"lang3": "ell", "name": "Greek", "flag": "🇬🇷"},
+    "tr": {"lang3": "tur", "name": "Turkish", "flag": "🇹🇷"},
+    "nl": {"lang3": "dut", "name": "Dutch", "flag": "🇳🇱"},
+    "hu": {"lang3": "hun", "name": "Hungarian", "flag": "🇭🇺"},
+    "bg": {"lang3": "bul", "name": "Bulgarian", "flag": "🇧🇬"},
+    "uk": {"lang3": "ukr", "name": "Ukrainian", "flag": "🇺🇦"},
+    "pl": {"lang3": "pol", "name": "Polish", "flag": "🇵🇱"},
+    "cs": {"lang3": "cze", "name": "Czech", "flag": "🇨🇿"},
+    "sk": {"lang3": "slo", "name": "Slovak", "flag": "🇸🇰"},
+    "sr": {"lang3": "scc", "name": "Serbian", "flag": "🇷🇸"},
+    "hr": {"lang3": "scr", "name": "Croatian", "flag": "🇭🇷"},
+    "sl": {"lang3": "slv", "name": "Slovenian", "flag": "🇸🇮"},
+    "da": {"lang3": "dan", "name": "Danish", "flag": "🇩🇰"},
+    "sv": {"lang3": "swe", "name": "Swedish", "flag": "🇸🇪"},
+    "no": {"lang3": "nor", "name": "Norwegian", "flag": "🇳🇴"},
+    "fi": {"lang3": "fin", "name": "Finnish", "flag": "🇫🇮"},
+    "ga": {"lang3": "gle", "name": "Irish", "flag": "🇮🇪"},
+    "is": {"lang3": "ice", "name": "Icelandic", "flag": "🇮🇸"},
+    "sq": {"lang3": "alb", "name": "Albanian", "flag": "🇦🇱"},
+    "mk": {"lang3": "mkd", "name": "Macedonian", "flag": "🇲🇰"},
+    "bs": {"lang3": "bos", "name": "Bosnian", "flag": "🇧🇦"},
+    "mt": {"lang3": "mlt", "name": "Maltese", "flag": "🇲🇹"},
+    "zh": {"lang3": "chi", "name": "Chinese", "flag": "🇨🇳"},
+    "ja": {"lang3": "jpn", "name": "Japanese", "flag": "🇯🇵"},
+    "ko": {"lang3": "kor", "name": "Korean", "flag": "🇰🇷"},
+    "hi": {"lang3": "hin", "name": "Hindi", "flag": "🇮🇳"},
+    "ru": {"lang3": "rus", "name": "Russian", "flag": "🇷🇺"},
+    "he": {"lang3": "heb", "name": "Hebrew", "flag": "🇮🇱"},
+    "ar": {"lang3": "ara", "name": "Arabic", "flag": "🇸🇦"},
+    "ms": {"lang3": "msa", "name": "Malay", "flag": "🇲🇾"},
+    "th": {"lang3": "tha", "name": "Thai", "flag": "🇹🇭"},
+    "vi": {"lang3": "vie", "name": "Vietnamese", "flag": "🇻🇳"},
+    "id": {"lang3": "ind", "name": "Indonesian", "flag": "🇮🇩"},
+    "et": {"lang3": "est", "name": "Estonian", "flag": "🇪🇪"},
+    "lv": {"lang3": "lav", "name": "Latvian", "flag": "🇱🇻"},
+    "lt": {"lang3": "lit", "name": "Lithuanian", "flag": "🇱🇹"},
+    "ka": {"lang3": "geo", "name": "Georgian", "flag": "🇬🇪"},
+    "hy": {"lang3": "arm", "name": "Armenian", "flag": "🇦🇲"},
+    "az": {"lang3": "aze", "name": "Azerbaijani", "flag": "🇦🇿"},
+    "be": {"lang3": "bel", "name": "Belarusian", "flag": "🇧🇾"},
+    "kk": {"lang3": "kaz", "name": "Kazakh", "flag": "🇰🇿"},
+    "uz": {"lang3": "uzb", "name": "Uzbek", "flag": "🇺🇿"},
+    "ur": {"lang3": "urd", "name": "Urdu", "flag": "🇵🇰"},
+    "bn": {"lang3": "ben", "name": "Bengali", "flag": "🇧🇩"},
+    "si": {"lang3": "sin", "name": "Sinhalese", "flag": "🇱🇰"},
+    "sw": {"lang3": "swa", "name": "Swahili", "flag": "🇰🇪"},
+    "fa": {"lang3": "per", "name": "Persian", "flag": "🇮🇷"},
+    "af": {"lang3": "afr", "name": "Afrikaans", "flag": "🇿🇦"},
+    "eo": {"lang3": "epo", "name": "Esperanto", "flag": "🏳️"},
+    "km": {"lang3": "khm", "name": "Khmer", "flag": "🇰🇭"},
+    "my": {"lang3": "bur", "name": "Burmese", "flag": "🇲🇲"},
+    "mn": {"lang3": "mon", "name": "Mongolian", "flag": "🇲🇳"},
+    "am": {"lang3": "amh", "name": "Amharic", "flag": "🇪🇹"},
+    "so": {"lang3": "som", "name": "Somali", "flag": "🇸🇴"},
+    "tl": {"lang3": "tgl", "name": "Tagalog", "flag": "🇵🇭"}
+}
 
 # --- DIZPOZIȚIE MODELE ȘI DICTIONARE FILTRARE ---
 MODEL_PREFERAT = [
@@ -715,15 +779,9 @@ Remove these filler sounds/interjections entirely: Aaah, Aah, Ah, Ahem, Ahh, Arg
 def translate_gemini(texts_dict, target_lang, api_key, model_name, timeout=API_TIMEOUT, thinking_level=THINKING_LEVEL):
     url = f"https://generativelanguage.googleapis.com/v1alpha/models/{model_name}:generateContent?key={api_key}"
     
-    # 1. Transformăm codul scurt în numele complet al limbii pentru AI
-    nume_limbi = {
-        "ro": "Romanian", "en": "English", "es": "Spanish", "fr": "French", 
-        "de": "German", "it": "Italian", "pt": "Portuguese", "hu": "Hungarian", 
-        "pl": "Polish", "cs": "Czech", "tr": "Turkish", "bg": "Bulgarian", 
-        "ru": "Russian", "el": "Greek", "nl": "Dutch", "zh": "Chinese", 
-        "ja": "Japanese", "ar": "Arabic", "uk": "Ukrainian"
-    }
-    limba_finala = nume_limbi.get(str(target_lang).lower(), f"{str(target_lang).upper()} language")
+    # 1. Transformăm codul scurt în numele complet al limbii pentru AI folosind dicționarul global
+    lang_info = LANGUAGES_DATA.get(str(target_lang).lower(), {"lang3": "", "name": f"{str(target_lang).upper()} language", "flag": ""})
+    limba_finala = lang_info["name"]
 
     # 2. Generăm promptul dinamic în funcție de limba dorită de utilizator
     prompt = f"""
@@ -733,6 +791,7 @@ Return ONLY the raw JSON array containing objects with 'index' and 'text'. No ma
 """
 
     json_input = [{"index": str(k), "text": v} for k, v in texts_dict.items()]
+
 
     generation_config = {
         "temperature": 0.3,  
@@ -918,9 +977,18 @@ def process_batch_worker(batch, target_lang, user_keys, timeout_current, user_id
 
 # --- PARTEA 5 (JUMĂTATEA 1): INTERFAȚA WEB GRAFICĂ PE DARK MODE ---
 
+
 @app.get("/", response_class=HTMLResponse)
 def get_configuration_page():
     """Generază pagina web interactivă pentru introducerea și validarea cheilor"""
+    
+    # 1. Generăm dinamic lista de opțiuni direct din LANGUAGES_DATA
+    html_options = f'<option value="ro">Romanian {LANGUAGES_DATA["ro"]["flag"]}</option>\n'
+    for code, info in LANGUAGES_DATA.items():
+        if code != "ro":
+            html_options += f'                    <option value="{code}">{info["name"]} {info["flag"]}</option>\n'
+
+    # 2. Textul tău HTML brut
     html_content = """
     <!DOCTYPE html>
     <html lang="ro">
@@ -1090,6 +1158,8 @@ def get_configuration_page():
                 background-color: #33ffdd;
             }
 
+}
+
 </style>
     </head>
     <body>
@@ -1112,28 +1182,14 @@ def get_configuration_page():
             <div class="input-group">
                 <label>Target Translation Language:</label>
                 <select id="limba_tinta" onchange="verificaLimbaManuala()">
-                    <option value="ro">Romanian 🇷🇴</option>
-                    <option value="en">English 🇺🇸</option>
-                    <option value="es">Spanish 🇪🇸</option>
-                    <option value="fr">French 🇫🇷</option>
-                    <option value="de">German 🇩🇪</option>
-                    <option value="it">Italian 🇮🇹</option>
-                    <option value="pt">Portuguese 🇵🇹</option>
-                    <option value="hu">Hungarian 🇭🇺</option>
-                    <option value="pl">Polish 🇵🇱</option>
-                    <option value="cs">Czech 🇨🇿</option>
-                    <option value="tr">Turkish 🇹🇷</option>
-                    <option value="bg">Bulgarian 🇧🇬</option>
-                    <option value="ru">Russian 🇷🇺</option>
-                    <option value="el">Greek 🇬🇷</option>
-                    <option value="nl">Dutch 🇳🇱</option>
+                    {{OPTIUNI_LIMBI}}
                     <option value="manual">Other Language (Custom ISO Code) 🌐</option>
                 </select>
             </div>
 
             <div class="input-group" id="container_cod_manual" style="display: none; margin-top: 10px;">
-                <label>ISO Language Code (2 letters, e.g., zh, ar, ja, uk):</label>
-                <input type="text" id="cod_limba_manual" placeholder="e.g., zh" maxlength="2" style="text-transform: lowercase;">
+                <label>ISO Language Code (2 letters, e.g., cy, eu, gl):</label>
+                <input type="text" id="cod_limba_manual" placeholder="e.g., cy" maxlength="2" style="text-transform: lowercase;">
             </div>
             
             <button onclick="valideazaSiGenereaza()">Verify & Generate Stremio Link</button>
@@ -1162,7 +1218,7 @@ def get_configuration_page():
                 if (limba === "manual") {
                     const codManual = document.getElementById('cod_limba_manual').value.trim().toLowerCase();
                     if (codManual.length !== 2) {
-                        afiseazaRezultat("❌ Please enter a valid 2-letter language code (e.g., zh, ar, ja)!", "error");
+                        afiseazaRezultat("❌ Please enter a valid 2-letter language code (e.g., cy, eu, gl)!", "error");
                         return;
                     }
                     limba = codManual;
@@ -1284,7 +1340,7 @@ def get_configuration_page():
     </body>
     </html>
     """
-
+    html_content = html_content.replace("{{OPTIUNI_LIMBI}}", html_options)
     return HTMLResponse(content=html_content)
 
 
@@ -1333,13 +1389,10 @@ def get_manifest_configured(request: Request, api_keys: str, lang: str):
         if not verifica_rate_limit_ip(ip_real, "Manifest"):
             return Response("Too many requests. Your IP has been temporarily banned.", status_code=429)
 
-    # 🌟 REPARATIE STEAGURI: Generăm steagul dinamic chiar la începutul funcției ca să fie accesibil peste tot!
-    steaguri = {
-        "ro": "🇷🇴", "en": "🇺🇸", "es": "🇪🇸", "fr": "🇫🇷", "de": "🇩🇪", 
-        "it": "🇮🇹", "hu": "🇭🇺", "pt": "🇵🇹", "ru": "🇷🇺", "tr": "🇹🇷", 
-        "bg": "🇧🇬", "el": "🇬🇷", "pl": "🇵🇱", "cs": "🇨🇿", "nl": "🇳🇱"
-    }
-    steag_ales = steaguri.get(lang.lower(), "🌐")
+    # 🌟 REPARATIE STEAGURI: Extragem steagul dinamic din dicționarul global LANGUAGES_DATA
+    lang_info = LANGUAGES_DATA.get(lang.lower(), {"lang3": "", "name": "", "flag": "🌐"})
+    steag_ales = lang_info["flag"]
+
 
     # 📝 LOGARE ÎN ISTORICUL TEXT (Rămâne doar logul tău normal de vizionare)
     try:
@@ -1356,7 +1409,7 @@ def get_manifest_configured(request: Request, api_keys: str, lang: str):
             "id": f"community.stremio.geminii.batch.translator.{lang.lower()}",
             "version": "1.7.1",
             "name": f"{steag_ales}-GEMINI AI",
-            "description": f"Te rog configurează addon-ul. Introdu minimum 3 chei API valide pentru limba {lang.upper()}.",
+            "description": f"Please configure the addon. Enter at least 3 valid API keys and choose the language corresponding to the flag.",
             "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8f/Google-gemini-icon.svg/960px-Google-gemini-icon.svg.png",
             "resources": [], 
             "types": [],     
@@ -1552,8 +1605,9 @@ def get_subtitles(api_keys: str, video_type: str, imdb_id: str, lang: str, extra
                 lang_id = item.get('SubLanguageID', 'eng')
 
                 if lang_code != lang.lower():
-                    steaguri_tinta = {"ro": "🇷🇴", "en": "🇺🇸", "es": "🇪🇸", "fr": "🇫🇷", "de": "🇩🇪", "it": "🇮🇹", "hu": "🇭🇺", "pt": "🇵🇹", "ru": "🇷🇺", "tr": "🇹🇷", "bg": "🇧🇬", "el": "🇬🇷", "pl": "🇵🇱", "cs": "🇨🇿", "nl": "🇳🇱"}
-                    steag_tinta = steaguri_tinta.get(lang.lower(), "🌐")
+                    # 🌟 Căutăm limba în dicționarul global. Dacă nu există, punem globul 🌐 ca valoare implicită
+                    lang_info = LANGUAGES_DATA.get(lang.lower(), {"lang3": "", "name": f"{lang.upper()} language", "flag": "🌐"})
+                    steag_tinta = lang_info["flag"] if lang_info["flag"] else "🌐"
                     
                     subtitles_list.append({
                         "id": f"{lang}-{steag_tinta}-{sub_name[:30]}",
@@ -1564,6 +1618,7 @@ def get_subtitles(api_keys: str, video_type: str, imdb_id: str, lang: str, extra
     except Exception as e:
         print(f"[-] Eroare căutare Gemini Multi-Key: {e}")
     return {"subtitles": subtitles_list}
+
 
 
 
