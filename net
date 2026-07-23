@@ -113,6 +113,7 @@ IP_BANATE_TEMPORAR = {}
 RECIDIVISTI_CONTOR = {}
 CACHE_DETALII_FILME_RAM = {}
 ISTORIC_CERERI_IP = {}
+ISTORIC_LOGURI_CACHE = {}
 
 # --- COZI ȘI CONECTIVITATE ACTIVĂ ---
 active_ips = set()
@@ -148,11 +149,11 @@ if not os.path.exists(CACHE_DIR):
 # --- CONFIGURĂRI MOTOARE ȘI PARAMETRI GEMINI ---
 API_TIMEOUT = 300
 THINKING_LEVEL = "low"
-FIRST_BATCH_SIZE = 100
-NEXT_BATCH_SIZE = 300
+FIRST_BATCH_SIZE = 400
+NEXT_BATCH_SIZE = 400
 FIRST_BATCH_TIMEOUT = 300
-PAUZA_DUPA_EROARE = 10.0
- 
+PAUZA_DUPA_EROARE = 3.0
+
 LANGUAGES_DATA = {
     "ro": {"lang3": "rum", "name": "Romanian", "flag": "🇷🇴"},
     "en": {"lang3": "eng", "name": "English", "flag": "🇬🇧"},
@@ -246,12 +247,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🛑 RUTELE PE CARE DOAR BOȚII LE DESCHID (CURĂȚAT ȘI EXTINS CU CELE NOI DIN LOGURI)
-RUTE_INTERZISE = [
-    "/deepl", "/deepl/", "/gemini", "/gemini/", 
-    "/wp-admin", "/admin", "/.env", "/xmlrpc.php", "/index.php",
-    "/mcp", "/sse", "/favicon.ico"
+# 🛑 RUTELE PE CARE DOAR BOȚII LE DESCHID (COMPACTĂ, SIGURĂ PENTRU ADD-ON SUBTITRĂRI)
+RUTE_INTERZISE = [ 
+    "/.aws", "/.env", "/.git", "/.netrc", "/.npmrc", "/.well-known", "/Alvin9999", "/actuator", "/admin", "/ads.txt",
+    "/ai.txt", "/api/config", "/api/env", "/debug/vars", "/graphql", "/mcp", "/officialsite", "/phpmyadmin", "/sse", "/vercel.json",
+    "/web.config", "/wp-admin", "/wp-includes", ".properties", ".tfstate", ".tfvars", ".yml", "AccountKey.json", "account.json", "adminsdk.json",
+    "amplifyconfiguration.json", "aws-exports.js", "awsconfiguration.json", "bjch.png", "config.js", "config.php", "config.py", "credentials.json", "env.js", "favicon.ico",
+    "firebase.json", "gcp-credentials.json", "key.json", "keys.json", "logo_512.png", "logox.png", "netlify.toml", "openapi.json", "robots.txt", "secrets.json",
+    "sellers.json", "settings.json", "settings.py", "sitemap.xml", "swagger.json", "touch-icon", "vpnweb.png", "wp-config.php", "wp-login.php", "xmlrpc.php"
 ]
+
 
 BLACKLIST_PATH = "/app/blacklist_v2.txt"
 
@@ -314,8 +319,21 @@ async def log_client_connections(request: Request, call_next):
 
     cale_ceruta = request.url.path
 
-    # 🛑 4. SCUTUL AUTO-DEFENSIV: Dacă un IP nou accesează o rută de bot mizerabilă
-    if cale_ceruta in RUTE_INTERZISE:
+    # 🛑 4. SCUTUL AUTO-DEFENSIV: Prinde potriviri exacte, subfoldere sau extensii (.php)
+    este_ruta_bot = False
+    
+    # 🔓 EXCEPȚIE DOCKER & LOCAL: Nu verificăm cererile interne din rețeaua Docker (172.x) sau locale
+    # Protejează add-on-ul de subtitrări și streaming împotriva blocării accidentale
+    if ip_real.startswith("172.") or ip_real.startswith("127.") or ip_real == "localhost":
+        este_ruta_bot = False
+    else:
+        for ruta in RUTE_INTERZISE:
+            # Verificăm dacă ruta cerută începe cu, este egală sau se termină cu elementul interzis
+            if cale_ceruta.startswith(ruta) or cale_ceruta == ruta or cale_ceruta.endswith(ruta):
+                este_ruta_bot = True
+                break
+
+    if este_ruta_bot:
         if ip_real not in IP_BLOCATE_RAM:
             with write_lock:
                 try:
@@ -327,6 +345,7 @@ async def log_client_connections(request: Request, call_next):
             print(f"{get_now()} [{CLR_ALERT}FIREWALL AUTOMAT{CLR_RESET}] IP-ul {CLR_ALERT}{ip_real}{CLR_RESET} a accesat ruta de bot '{cale_ceruta}'. Blacklisted!")
 
         return Response("Acces Interzis. IP blocat.", status_code=403)
+
 
     # 🛑 5. PROTECȚIE METODĂ HTTP VERB INSPECTION
     if request.method not in ["GET", "HEAD"] and cale_ceruta == "/":
@@ -690,6 +709,7 @@ def split_smart_long_line(text, max_chars=43):
 
 def _build_prompt(target_lang, num_texts):
     """Generează dinamic instrucțiunile de traducere culturală transmise către Gemini"""
+    # 1. Regulile culturale detaliate de bază rămân intacte
     LANG_SPECIFIC = {
         'ro': {
             'name': 'Romanian',
@@ -729,23 +749,35 @@ def _build_prompt(target_lang, num_texts):
         'en': {'name': 'English', 'diacritics': '', 'style': '- Use natural spoken American/British English.\n'}
     }
 
-    lang_info = LANG_SPECIFIC.get(target_lang, {
-        'name': target_lang.upper(),
-        'diacritics': f'Use correct {target_lang.upper()} characters and diacritics.',
-        'style': f'- Use natural, modern spoken {target_lang.upper()}.\n',
-    })
+    # 2. 🌟 SOLUȚIA DE EXTINDERE: Dacă limba nu e în tabelul de sus, luăm numele real din LANGUAGES_DATA
+    lang_code_clean = str(target_lang).lower().strip()
+    
+    if lang_code_clean in LANG_SPECIFIC:
+        lang_info = LANG_SPECIFIC[lang_code_clean]
+    else:
+        # Căutăm numele real în mega-dicționarul tău de sus (ex: "zh" -> "Chinese")
+        global_info = LANGUAGES_DATA.get(lang_code_clean, {"name": lang_code_clean.upper()})
+        lang_info = {
+            'name': global_info['name'],
+            'diacritics': f'Use correct {global_info["name"]} characters, script, alphabet and diacritics correctly.',
+            'style': f'- Use natural, modern spoken {global_info["name"]}.\n',
+        }
+
 
     lang_name = lang_info['name']
     diacritics_rule = lang_info.get('diacritics', '')
     style_rules = lang_info.get('style', '')
 
-    return f"""**MISSION:**
+    # ======================================================================
+    # VERSIUNEA 1: PROMPT DETALIAT ȘI CULTURAL (Calitate maximă, 43 caractere)
+    # ======================================================================
+    prompt_complex = f"""**MISSION:**
 You are a world-class expert in video subtitle localization and cultural adaptation.
 Translate ALL subtitle texts below into natural, modern, impactful {lang_name}.
 
 **OUTPUT FORMAT (CRITICAL):**
 - Return ONLY a valid JSON array of objects. No markdown, no code fences.
-- Format strictly as: [{{{"index": "ID", "text": "translated text"}}}]
+- Format strictly as: [{{ "index": "ID", "text": "translated text" }}]
 - You MUST return exactly {num_texts} items in the array.
 
 **MULTILINGUAL SOURCE HANDLING:**
@@ -773,23 +805,41 @@ Remove these filler sounds/interjections entirely: Aaah, Aah, Ah, Ahem, Ahh, Arg
 **CRITICAL ANTI-SHIFTING RULES:**
 - Text from input index X MUST remain in output index X.
 - If a single sentence is broken across two indices, translate the broken parts EXACTLY where they are. Do NOT combine them."""
+
+
+    # ======================================================================
+    # VERSIUNEA 2: PROMPT ULTRA-RAPID OPTIMIZAT (Viteză maximă, păstrează structura)
+    # ======================================================================
+    prompt_rapid = f"""**MISSION:** Translate ALL subtitle texts below strictly into {lang_name}.
+
+**OUTPUT FORMAT:**
+- Return ONLY a valid JSON array of objects. No markdown, no code fences.
+- Format strictly as: [{{ "index": "ID", "text": "translated text" }}]
+- You MUST return exactly {num_texts} items in the array.
+
+**FORMATTING RULES (STRICT):**
+- Each line must NOT exceed 43 characters. Split logically with \\n if needed.
+- NEVER output more than 2 text lines per subtitle block.
+
+**ANTI-SHIFTING:**
+- Text from input index X MUST remain in output index X. Do NOT combine or skip indices!"""
+
+
+    # 🌟 AICI COMANZI SCRIPTUL: Șterge sau pune # în fața liniei pe care o vrei activă
+    return prompt_complex       # <--- ACUM ESTE DEZACTIVAT MODUL DETALIAT (Calitate)
+    #return prompt_rapid       # <--- ACUM ESTE ACTIV MODUL RAPID (Viteză)
+
 # ----------------------------------------------------------------------
 # 🏎️ 13. MOTORUL ASINCRON DE TRADUCERE ÎN LOTURI (GOOGLE GEMINI API)
 # ----------------------------------------------------------------------
 def translate_gemini(texts_dict, target_lang, api_key, model_name, timeout=API_TIMEOUT, thinking_level=THINKING_LEVEL):
     url = f"https://generativelanguage.googleapis.com/v1alpha/models/{model_name}:generateContent?key={api_key}"
     
-    # 1. Transformăm codul scurt în numele complet al limbii pentru AI folosind dicționarul global
-    lang_info = LANGUAGES_DATA.get(str(target_lang).lower(), {"lang3": "", "name": f"{str(target_lang).upper()} language", "flag": ""})
-    limba_finala = lang_info["name"]
+    # 1. Calculăm numărul de texte din lot și apelăm promptul cultural avansat
+    num_texts = len(texts_dict)
+    prompt = _build_prompt(target_lang, num_texts)
 
-    # 2. Generăm promptul dinamic în funcție de limba dorită de utilizator
-    prompt = f"""
-You are an expert subtitle translator. Translate the 'text' values of the following JSON data strictly into {limba_finala}.
-Keep the 'index' fields completely unchanged. 
-Return ONLY the raw JSON array containing objects with 'index' and 'text'. No markdown formatting, no explanation.
-"""
-
+    # 2. Pregătim structura JSON pentru intrare (rămâne neschimbată)
     json_input = [{"index": str(k), "text": v} for k, v in texts_dict.items()]
 
 
@@ -1619,9 +1669,6 @@ def get_subtitles(api_keys: str, video_type: str, imdb_id: str, lang: str, extra
         print(f"[-] Eroare căutare Gemini Multi-Key: {e}")
     return {"subtitles": subtitles_list}
 
-
-
-
 @app.get("/api_keys={api_keys}_lang={lang}/translate/{sub_id}.srt")
 async def translate_on_demand(request: Request, api_keys: str, sub_id: str, lang: str):
         # 🚀 1. LOGARE DETALII REALE (Cloudflare IP sigur)
@@ -1687,16 +1734,38 @@ async def translate_on_demand(request: Request, api_keys: str, sub_id: str, lang
 # 🚀 2. VERIFICARE CACHE (Instant, cu auto-sincronizare la conectare)
     cache_path = os.path.join(CACHE_DIR, f"{sub_id}_{lang.lower()}.srt")
     if os.path.exists(cache_path):
+        # 🛡️ Păstrăm scopul tău tehnic de a ține legătura deschisă
         await asyncio.sleep(3)
-        date_extrase_salvate = getattr(request.state, "date_extrase", "")
         
-        # ✂️ TĂIERE INTELIGENTĂ CARACTERE (Oprește întinderea textului pe tot ecranul)
-        if date_extrase_salvate.strip():
-            text_scurtat_cache = date_extrase_salvate[:105] + "..." if len(date_extrase_salvate) > 110 else date_extrase_salvate
-            print(f"{get_now()} {CLR_INFO}{text_scurtat_cache}{CLR_RESET}")
+        global ISTORIC_LOGURI_CACHE
+        acum_log = time.time()
+        
+        # Generăm cheia pe ID-ul scurt ca să ignorăm complet schimbările de IP (IPv4/IPv6)
+        cheie_cerere = f"{id_utilizator_scurt}_{lang.lower()}_{sub_id}"
+
+        # Curățare automată la peste 50 de intrări în RAM (Consum ZERO)
+        if len(ISTORIC_LOGURI_CACHE) > 50:
+            ISTORIC_LOGURI_CACHE = {k: v for k, v in ISTORIC_LOGURI_CACHE.items() if acum_log - v < 15}
+
+        # Verificăm dacă utilizatorul a mai cerut subtitrarea în ultimele 10 secunde
+        if cheie_cerere in ISTORIC_LOGURI_CACHE and (acum_log - ISTORIC_LOGURI_CACHE[cheie_cerere]) < 15:
+            # Este o derulare de film în player. Trimitem fișierul în tăcere totală în consolă!
+            pass
+        else:
+            # Este o cerere proaspătă, o printăm o singură dată pe ecran
+            date_extrase_salvate = getattr(request.state, "date_extrase", "")
             
-        print(f"{get_now()} [{CLR_INFO}GEMINI   CACHE{CLR_RESET}] ID: {CLR_RUN}{id_utilizator_scurt}{CLR_RESET} IP: {CLR_RUN}{ip_real}{CLR_RESET}  [{lang.upper()}] | SubID: {sub_id}")
+            # ✂️ TĂIERE INTELIGENTĂ CARACTERE
+            if date_extrase_salvate.strip():
+                text_scurtat_cache = date_extrase_salvate[:105] + "..." if len(date_extrase_salvate) > 110 else date_extrase_salvate
+                print(f"{get_now()} {CLR_INFO}{text_scurtat_cache}{CLR_RESET}")
+                
+            print(f"{get_now()} [{CLR_INFO}GEMINI   CACHE{CLR_RESET}] ID: {CLR_RUN}{id_utilizator_scurt}{CLR_RESET} IP: {CLR_RUN}{ip_real}{CLR_RESET}  [{lang.upper()}] | SubID: {sub_id}")
+            
+            # Salvăm timpul cererii în dicționar
+            ISTORIC_LOGURI_CACHE[cheie_cerere] = acum_log
         
+        # Returnăm subtitrarea din cache
         with open(cache_path, "r", encoding="utf-8") as f:
             return Response(content=f.read(), media_type="text/srt; charset=utf-8")
 
@@ -1764,7 +1833,7 @@ async def translate_on_demand(request: Request, api_keys: str, sub_id: str, lang
 
                         return Response("Acces interzis permanent. IP blocat.", status_code=403)
 
-                    # 🔒 DACĂ SUNTEM ÎNTRE ABATERILE 3 ȘI 9 (Utilizator normal pe Stremio oficial, blocat temporar 1 oră)
+# 🔒 DACĂ SUNTEM ÎNTRE ABATERILE 3 ȘI 9 (Utilizator normal pe Stremio oficial, blocat temporar 1 oră)
                     print(f"{get_now()} [{CLR_ALERT}AUTO-BAN ID{CLR_RESET}] ID: {CLR_RUN}{id_utilizator_scurt}{CLR_RESET} IP: {CLR_RUN}{ip_real}{CLR_RESET} a fost blocat pe cereri noi de subtitrări.")
                     
                     chunk_ban = (
@@ -1782,11 +1851,15 @@ async def translate_on_demand(request: Request, api_keys: str, sub_id: str, lang
                 
                 await asyncio.sleep(2)
                 
+                # Preluăm dinamic numărul de utilizatori activi din coadă în acest moment
+                oameni_in_fata = len(active_ips)
+                
                 chunk_schimbare = (
                     "1\n00:00:01,000 --> 00:50:00,000\n"
                     "⚠️ [GEMINI AI] SERVER IS ALREADY TRANSLATING YOUR PREVIOUS SELECTION!\n"
+                    f"Queue Status: There are currently {oameni_in_fata} active user(s) in line.\n"
                     "Please wait for your first subtitle to finish processing (120-245 seconds).\n"
-                    "Do not switch subtitles repeatedly or your User ID will be locked!\n"
+                    f"Warning Status: [{abateri_film}/3] - Do not switch subtitles repeatedly!\n"
                     "Go back to the first subtitle you selected and allow it to load.\n\n"
                 )
                 return Response(content=chunk_schimbare, media_type="text/plain; charset=utf-8")
@@ -1937,45 +2010,57 @@ async def translate_on_demand(request: Request, api_keys: str, sub_id: str, lang
                         return
 
                     content = srt_response.text.replace("\r", "")
+# 🔍 [DETECȚIE ȘI CONVERSIE UNIVERSALĂ DIRECT PE DISC]
+                    # Verificăm dacă este un SRT nativ și curat (conține săgeata specifică de timestamp)
+                    este_srt_standard = " --> " in content
 
-                    # 🔍 [DETECȚIE ȘI CONVERSIE UNIVERSALĂ DIRECT PE DISC]
-                    # Identificăm dacă fișierul este ASS, WebVTT sau MicroDVD (bazați pe markup-uri specifice din fișiere)
-                    este_format_alternativ = "[Script Info]" in content or "WEBVTT" in content or re.search(r'\{\d+\}\{\d+\}', content)
-
-                    if este_format_alternativ:
-                        print(f"{get_now()} [{CLR_RUN}-/ASS/VTT/SUB/{CLR_RESET}] ID: {CLR_RUN}{id_utilizator_scurt}{CLR_RESET} | SubID: {sub_id}. Se pornește conversia disc...")
+                    # Dacă NU este SRT standard, înseamnă că e ASS, VTT, MicroDVD (.sub), SubViewer (.sub), SAMI (.smi) sau MPL2
+                    if not este_srt_standard:
+                        print(f"{get_now()} [{CLR_RUN}CONVERSIE -ERR{CLR_RESET}] ID: {CLR_RUN}{id_utilizator_scurt}{CLR_RESET} | SubID: {sub_id}. Se convertește formatul special prin disc...")
                         
                         cale_temporara_srt = os.path.join(CACHE_DIR, f"temp_conv_{sub_id}.srt")
                         
                         try:
-                            # 🚀 1. Încarcă structura alternativă (pysubs2 detectează automat tipul de text: ASS, SSA, VTT sau SUB)
-                            sub_obiect = pysubs2.SSAFile.from_string(content)
+                            # 🚀 Încărcare universală cu fallback obligatoriu de 23.976 FPS pentru MicroDVD
+                            sub_obiect = pysubs2.SSAFile.from_string(content, fps=23.976)
                             
-                            # 🚀 2. Salvează fișierul fizic ca SRT standardizat pe disc
+                            # Salvează fișierul ca SRT standardizat pe disc
                             sub_obiect.save(cale_temporara_srt, format_="srt")
-                            #print(f"{get_now()} [{CLR_RUN}DISC SAVE{CLR_RESET}] Subtitrarea convertită  a fost salvată în: {cale_temporara_srt}")
                             
-                            # 🚀 3. Citim fișierul SRT nativ înapoi în variabila content
+                            # Citim fișierul SRT nativ înapoi în variabila content
                             with open(cale_temporara_srt, "r", encoding="utf-8", errors="ignore") as f_temp:
                                 content = f_temp.read().replace("\r", "")
                                 
-                            #print(f"{get_now()} [{CLR_RUN}CONVERSIE OK{CLR_RESET}] Subtitrarea a fost transformată cu succes în SRT curat prin disc.")
-                            
-                            # 🚀 4. Curățăm fișierul temporar de pe VPS
+                            # Curățăm fișierul temporar de pe VPS
                             if os.path.exists(cale_temporara_srt):
                                 os.remove(cale_temporara_srt)
                                 
                         except Exception as conv_err:
-                            print(f"{get_now()} [{CLR_ALERT}CONVERSIE ERR{CLR_RESET}] Eșec la conversia: {conv_err}. Se încearcă procesarea brută.")
+                            print(f"{get_now()} [{CLR_ALERT}CONVERSIE -ERR{CLR_RESET}] Eșec la conversia universală: {conv_err}. Se încearcă procesarea brută.")
                             if os.path.exists(cale_temporara_srt):
                                 os.remove(cale_temporara_srt)
+
+                    # 🧹 ULTRA-CURĂȚARE SANITARĂ A TEXTULUI (Pentru Gemini și pentru ecranul TV)
+                    # 1. Înlocuim tag-urile de linie nouă [br], <br>, <br/> cu un ENTER real (\n)
+                    content = re.sub(r'\[/?br\]', '\n', content, flags=re.IGNORECASE)
+                    content = re.sub(r'<br\s*/?>', '\n', content, flags=re.IGNORECASE)
+
+                    # 2. Ștergem complet tag-urile avansate de stilizare, fonturi și poziții din ASS (ex: {\pos(192,240)}, {\an8}, {\c&HFF0000&})
+                    content = re.sub(r'\{[^\}]+\}', '', content)
+
+                    # 3. Ștergem tag-urile clasice de stilizare HTML/VTT (<i>, <b>, <u>, <font...>, </font>) care pot apărea ca text brut
+                    content = re.sub(r'</?(i|b|u|em|strong|font|span)[^>]*>', '', content, flags=re.IGNORECASE)
+
+                    # 4. Ștergem alte tag-uri ciudate în paranteze pătrate care mai scapă în text (ex: [i], [/b])
+                    content = re.sub(r'\[/?(i|b|u|font|color)[^\]]*\]', '', content, flags=re.IGNORECASE)
+
 
                     # Parsare text garantat SRT curat, standardizat global
                     blocks = re.findall(r'(\d+)\s*\n(\d{2}:\d{2}:\d{2}[.,]\d{3} --> \d{2}:\d{2}:\d{2}[.,]\d{3})\s*\n([\s\S]*?)(?=\n\n|$)', content)
                     
                     if not blocks:
                         vtt_blocks = re.findall(r'(\d{2}:\d{2}:\d{2}[.,]\d{3} --> \d{2}:\d{2}:\d{2}[.,]\d{3})\s*\n([\s\S]*?)(?=\n\n|$)', content)
-                        # Mapăm corect structura asșteptată de 3 elemente pentru VTT: (id, timestamp, text)
+                        # Mapăm corect structura așteptată de 3 elemente pentru VTT: (id, timestamp, text)
                         blocks = [(str(i+1), b[0], b[1]) for i, b in enumerate(vtt_blocks)]
 
                     if not blocks:
@@ -1988,7 +2073,7 @@ async def translate_on_demand(request: Request, api_keys: str, sub_id: str, lang
                             CACHE_CHEI_INVALIDE_RAM[id_utilizator_scurt] = timp_viitor_ban
                             IP_BANATE_TEMPORAR[ip_real] = timp_viitor_ban 
                             print(f"{get_now()} [{CLR_ALERT}AUTO-BAN ID{CLR_RESET}] ID: {CLR_RUN}{id_utilizator_scurt}{CLR_RESET} BANNED 10m for empty file spam.")
-                        
+
                         chunk_format_err = (
                             "1\n00:00:01,000 --> 00:50:00,000\n"
                             "⚠️ [GEMINI AI] SELECTED SUBTITLE LINK IS CORRUPT OR EMPTY!\n"
@@ -2064,10 +2149,10 @@ async def translate_on_demand(request: Request, api_keys: str, sub_id: str, lang
 
                     yield full_srt
 
-                    print(f"{get_now()} [{CLR_COOL}GEMINI Tradusă{CLR_RESET}] ID: {CLR_COOL}{id_utilizator_scurt}{CLR_RESET} IP: {CLR_COOL}{ip_real}{CLR_RESET}  SubID: {sub_id} Pauză 30s")
+                    print(f"{get_now()} [{CLR_COOL}GEMINI Tradusă{CLR_RESET}] ID: {CLR_COOL}{id_utilizator_scurt}{CLR_RESET} IP: {CLR_COOL}{ip_real}{CLR_RESET}  SubID: {sub_id} Pauză 5s")
                     
                     cooling_timer = 0
-                    while cooling_timer < 30:
+                    while cooling_timer < 5:
                         if await request.is_disconnected():
                             break
                         await asyncio.sleep(1)
@@ -2113,7 +2198,6 @@ async def translate_on_demand(request: Request, api_keys: str, sub_id: str, lang
         pass
 
     return Response(content="Eroare", media_type="text/plain")
-
 
 # --- CURĂȚARE AUTOMATĂ CACHE (MAI VECHI DE 30 ZILE) ȘI LOGURI ---
 def curata_linii_text(cale_fisier, linii_ramase=10):
@@ -2171,7 +2255,6 @@ async def curata_cache_vechi():
             
         await asyncio.sleep(86400)
 
-
 # =======================================================
 # MONITORIZARE ȘI RESETARE LIVE DIN CONSOLĂ DOCKER
 # =======================================================
@@ -2224,7 +2307,6 @@ def reseteaza_ram_din_consola(signum, frame):
 signal.signal(signal.SIGUSR1, afiseaza_ram_in_consola)
 signal.signal(signal.SIGUSR2, reseteaza_ram_din_consola)
 # =======================================================
-
 
 if __name__ == "__main__":
     import uvicorn
